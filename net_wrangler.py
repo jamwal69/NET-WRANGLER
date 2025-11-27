@@ -869,6 +869,18 @@ class CLI:
                 self.console.print("[yellow]Please ensure the manual file is in the same directory.[/yellow]")
         except Exception as e:
             self.console.print(f"[red]Error reading manual: {e}[/red]")
+
+    def display_table(self, title: str, columns: List[str], rows: List[List[str]]):
+        """Display data in a formatted table."""
+        table = Table(title=title, box=box.ROUNDED, show_header=True, header_style="bold magenta")
+        
+        for col in columns:
+            table.add_column(col)
+        
+        for row in rows:
+            table.add_row(*[str(item) for item in row])
+        
+        self.console.print(table)
     
     def run_network_discovery(self):
         """Run network discovery scan."""
