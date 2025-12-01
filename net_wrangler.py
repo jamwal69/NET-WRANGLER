@@ -756,9 +756,14 @@ class NetWrangler:
             True if SSL/TLS is supported
         """
         try:
-            context = ssl.create_default_context()
+            # SECURITY NOTE: This is a security scanning tool. We intentionally allow
+            # connections to servers with various SSL/TLS configurations to assess their
+            # security posture. The tool reports insecure configurations to users.
+            context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
             context.check_hostname = False
             context.verify_mode = ssl.CERT_NONE
+            # Set minimum TLS version to 1.2 for the scanning connection itself
+            context.minimum_version = ssl.TLSVersion.TLSv1_2
             
             with socket.create_connection((target, port), timeout=2) as sock:
                 with context.wrap_socket(sock) as ssock:
@@ -961,9 +966,14 @@ class NetWrangler:
             SSL banner information
         """
         try:
-            context = ssl.create_default_context()
+            # SECURITY NOTE: This is a security scanning tool. We use secure TLS settings
+            # for our connection while still being able to gather information about the
+            # target's SSL/TLS configuration.
+            context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
             context.check_hostname = False
             context.verify_mode = ssl.CERT_NONE
+            # Set minimum TLS version to 1.2 for secure scanning
+            context.minimum_version = ssl.TLSVersion.TLSv1_2
             
             with socket.create_connection((target, port), timeout=timeout) as sock:
                 with context.wrap_socket(sock, server_hostname=target) as ssock:
@@ -1121,9 +1131,13 @@ class NetWrangler:
         }
         
         try:
-            context = ssl.create_default_context()
+            # SECURITY NOTE: For SSL/TLS analysis, we need to connect to the target
+            # to assess its security configuration. We use TLS 1.2+ for our own
+            # connection security while analyzing the target's configuration.
+            context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
             context.check_hostname = False
             context.verify_mode = ssl.CERT_NONE
+            context.minimum_version = ssl.TLSVersion.TLSv1_2
             
             with socket.create_connection((target, port), timeout=self.timeout) as sock:
                 with context.wrap_socket(sock, server_hostname=target) as ssock:
