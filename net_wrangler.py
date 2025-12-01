@@ -249,9 +249,9 @@ class NetWrangler:
         139: "NETBIOS", 143: "IMAP", 443: "HTTPS", 445: "SMB", 993: "IMAPS",
         995: "POP3S", 1433: "MSSQL", 1521: "ORACLE", 1723: "PPTP", 3306: "MySQL",
         3389: "RDP", 5432: "PostgreSQL", 5900: "VNC", 6379: "Redis",
-        8080: "HTTP-Proxy", 8443: "HTTPS-Alt", 8888: "HTTP-Alt", 27017: "MongoDB",
+        8080: "HTTP-Proxy", 8443: "HTTPS-Alt", 27017: "MongoDB",
         # Additional common ports
-        25: "SMTP", 465: "SMTPS", 587: "SMTP-Submission",
+        465: "SMTPS", 587: "SMTP-Submission",
         514: "Syslog", 515: "Printer", 631: "CUPS",
         1080: "SOCKS", 1194: "OpenVPN", 1883: "MQTT",
         2049: "NFS", 2181: "Zookeeper", 2375: "Docker",
@@ -462,7 +462,8 @@ class NetWrangler:
             pass
         
         # For testing: if it looks like a valid hostname, accept it
-        if re.match(r'^[a-zA-Z0-9][-a-zA-Z0-9]*(\.[a-zA-Z0-9][-a-zA-Z0-9]*)+$', target):
+        # RFC 952/1123 compliant: starts with alphanumeric, can contain hyphens, but not start/end with hyphen
+        if re.match(r'^[a-zA-Z0-9]([a-zA-Z0-9-]*[a-zA-Z0-9])?(\.[a-zA-Z0-9]([a-zA-Z0-9-]*[a-zA-Z0-9])?)+$', target):
             # Can't resolve but appears to be valid hostname format
             return (True, target, "unresolved_hostname")
         
@@ -728,18 +729,19 @@ class NetWrangler:
         if not banner:
             return None
         
-        # Common version patterns
+        # Common version patterns - ordered from most specific to least specific
         patterns = [
-            r'(\d+\.\d+\.\d+[-\w]*)',  # x.y.z format
-            r'(\d+\.\d+[-\w]*)',       # x.y format  
-            r'v(\d+[\.\d]*)',          # v1.2.3 format
-            r'(\d+)\.(\d+)',           # major.minor
+            r'(\d+\.\d+\.\d+[-\w]*)',     # x.y.z format (most specific)
+            r'v(\d+\.\d+\.\d+[-\w]*)',    # v1.2.3 format with full version
+            r'(\d+\.\d+[-\w]*)',          # x.y format  
+            r'v(\d+\.\d+)',               # v1.2 format
         ]
         
         for pattern in patterns:
             match = re.search(pattern, banner)
             if match:
-                return match.group(0)
+                # Return the captured group, not the entire match for patterns with groups
+                return match.group(1) if match.lastindex else match.group(0)
         
         return None
     
@@ -786,14 +788,39 @@ class NetWrangler:
             self._rate_limit_wait()
             try:
                 with self._socket_context(sock_type=socket.SOCK_DGRAM, timeout=timeout) as sock:
-                    # Send empty packet or specific probe based on service
+                    # Send protocol-specific probes
                     if port == 53:  # DNS
-                        # DNS query for version.bind
-                        probe = b'\x00\x00\x10\x00\x00\x00\x00\x00\x00\x00\x00\x00'
-                    elif port == 161:  # SNMP
-                        probe = b'\x30\x26\x02\x01\x01\x04\x06\x70\x75\x62\x6c\x69\x63'
+                        # Valid DNS query for version.bind TXT record
+                        # Transaction ID (2 bytes) + Flags (2 bytes) + Questions (2) + Answer RRs (2) 
+                        # + Authority RRs (2) + Additional RRs (2) + Query
+                        probe = (
+                            b'\x00\x01'  # Transaction ID
+                            b'\x01\x00'  # Flags: Standard query
+                            b'\x00\x01'  # Questions: 1
+                            b'\x00\x00'  # Answer RRs: 0
+                            b'\x00\x00'  # Authority RRs: 0
+                            b'\x00\x00'  # Additional RRs: 0
+                            b'\x07version\x04bind\x00'  # Query name: version.bind
+                            b'\x00\x10'  # Type: TXT
+                            b'\x00\x03'  # Class: CH (CHAOS)
+                        )
+                    elif port == 161:  # SNMP v1/v2c GetRequest with "public" community
+                        probe = (
+                            b'\x30\x26'  # SEQUENCE, length 38
+                            b'\x02\x01\x01'  # INTEGER, version (v2c = 1)
+                            b'\x04\x06public'  # OCTET STRING, community "public"
+                            b'\xa0\x19'  # GetRequest-PDU
+                            b'\x02\x04\x00\x00\x00\x01'  # request-id
+                            b'\x02\x01\x00'  # error-status
+                            b'\x02\x01\x00'  # error-index
+                            b'\x30\x0b\x30\x09'  # varbind list
+                            b'\x06\x05\x2b\x06\x01\x02\x01'  # OID: 1.3.6.1.2.1
+                            b'\x05\x00'  # NULL value
+                        )
+                    elif port == 123:  # NTP
+                        probe = b'\x1b' + b'\x00' * 47  # NTP client request
                     else:
-                        probe = b'\x00'
+                        probe = b'\x00'  # Generic probe
                     
                     sock.sendto(probe, (target, port))
                     
@@ -1253,29 +1280,34 @@ class NetWrangler:
             response = None
             last_error = None
             
-            # Method 1: requests library
+            # Method 1: requests library with warnings suppressed for this request only
             try:
-                import urllib3
-                urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
-                response = requests.head(url, timeout=self.timeout, allow_redirects=True, verify=False)
+                import warnings
+                with warnings.catch_warnings():
+                    warnings.filterwarnings('ignore', category=requests.packages.urllib3.exceptions.InsecureRequestWarning)
+                    # Note: verify=False is intentional for security scanning - we want to analyze
+                    # the certificate regardless of its validity
+                    response = requests.head(url, timeout=self.timeout, allow_redirects=True, verify=False)
             except Exception as e:
                 last_error = e
             
             # Method 2: GET request if HEAD fails
             if response is None or response.status_code >= 400:
                 try:
-                    response = requests.get(url, timeout=self.timeout, allow_redirects=True, verify=False, stream=True)
+                    with warnings.catch_warnings():
+                        warnings.filterwarnings('ignore', category=requests.packages.urllib3.exceptions.InsecureRequestWarning)
+                        response = requests.get(url, timeout=self.timeout, allow_redirects=True, verify=False, stream=True)
                 except Exception as e:
                     last_error = e
             
             # Method 3: urllib fallback
+            # Note: verify disabled intentionally for security analysis purposes
             if response is None:
                 try:
                     import urllib.request
-                    import ssl
                     ctx = ssl.create_default_context()
                     ctx.check_hostname = False
-                    ctx.verify_mode = ssl.CERT_NONE
+                    ctx.verify_mode = ssl.CERT_NONE  # Intentional for security scanning
                     req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
                     with urllib.request.urlopen(req, timeout=self.timeout, context=ctx) as resp:
                         result["url"] = resp.url
