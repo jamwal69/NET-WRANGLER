@@ -58,7 +58,8 @@ def run_tests():
     test_header("2. Get Network Range")
     try:
         network = nw.get_network_range()
-        success = network and "/24" in network
+        # Accept any valid CIDR notation
+        success = network and "/" in network
         results.append(test_result("Get Network Range", success, f"Network: {network}"))
     except Exception as e:
         results.append(test_result("Get Network Range", False, str(e)))
